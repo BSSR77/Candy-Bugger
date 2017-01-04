@@ -4,51 +4,69 @@
   * Description        : Main program body
   ******************************************************************************
   *
-  * COPYRIGHT(c) 2016 STMicroelectronics
+  * Copyright (c) 2017 STMicroelectronics International N.V. 
+  * All rights reserved.
   *
-  * Redistribution and use in source and binary forms, with or without modification,
-  * are permitted provided that the following conditions are met:
-  *   1. Redistributions of source code must retain the above copyright notice,
-  *      this list of conditions and the following disclaimer.
-  *   2. Redistributions in binary form must reproduce the above copyright notice,
-  *      this list of conditions and the following disclaimer in the documentation
-  *      and/or other materials provided with the distribution.
-  *   3. Neither the name of STMicroelectronics nor the names of its contributors
-  *      may be used to endorse or promote products derived from this software
-  *      without specific prior written permission.
+  * Redistribution and use in source and binary forms, with or without 
+  * modification, are permitted, provided that the following conditions are met:
   *
-  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-  * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-  * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-  * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  * 1. Redistribution of source code must retain the above copyright notice, 
+  *    this list of conditions and the following disclaimer.
+  * 2. Redistributions in binary form must reproduce the above copyright notice,
+  *    this list of conditions and the following disclaimer in the documentation
+  *    and/or other materials provided with the distribution.
+  * 3. Neither the name of STMicroelectronics nor the names of other 
+  *    contributors to this software may be used to endorse or promote products 
+  *    derived from this software without specific written permission.
+  * 4. This software, including modifications and/or derivative works of this 
+  *    software, must execute solely and exclusively on microcontroller or
+  *    microprocessor devices manufactured by or for STMicroelectronics.
+  * 5. Redistribution and use of this software other than as permitted under 
+  *    this license is void and will automatically terminate your rights under 
+  *    this license. 
+  *
+  * THIS SOFTWARE IS PROVIDED BY STMICROELECTRONICS AND CONTRIBUTORS "AS IS" 
+  * AND ANY EXPRESS, IMPLIED OR STATUTORY WARRANTIES, INCLUDING, BUT NOT 
+  * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A 
+  * PARTICULAR PURPOSE AND NON-INFRINGEMENT OF THIRD PARTY INTELLECTUAL PROPERTY
+  * RIGHTS ARE DISCLAIMED TO THE FULLEST EXTENT PERMITTED BY LAW. IN NO EVENT 
+  * SHALL STMICROELECTRONICS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+  * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, 
+  * OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF 
+  * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING 
+  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   *
   ******************************************************************************
   */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32l4xx_hal.h"
+#include "cmsis_os.h"
 
 /* USER CODE BEGIN Includes */
 #include "serial.h"
 #include "can.h"
-#define TIMER_COUNT 16
+
+
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan1;
 
-CRC_HandleTypeDef hcrc;
-
-RTC_HandleTypeDef hrtc;
-
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart2_tx;
+
+WWDG_HandleTypeDef hwwdg;
+
+osThreadId processCanHandle;
+osThreadId ProcessUartHandle;
+osMessageQId mainCanTxQHandle;
+osMessageQId mainCanRxQHandle;
+osTimerId WWDGTmrHandle;
+osMutexId UartTxMtxHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -57,11 +75,7 @@ static uint32_t inputId;
 static uint8_t dataBuf[8];
 static uint8_t inputMode = 0; //0=id, 1=data
 static uint8_t inputLength = 0;
-static uint8_t canFullNotified = 0;
-uint32_t millis = 0;
-uint16_t timerDelays[TIMER_COUNT];
-uint32_t timerPhases[TIMER_COUNT];
-Can_frame_t timerFrames[TIMER_COUNT];
+static uint8_t CanTxCbState;
 
 /* USER CODE END PV */
 
@@ -71,9 +85,11 @@ void Error_Handler(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_CAN1_Init(void);
-static void MX_CRC_Init(void);
-static void MX_RTC_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_WWDG_Init(void);
+void doProcessCan(void const * argument);
+void doProcessUart(void const * argument);
+void TmrKickDog(void const * argument);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -132,57 +148,13 @@ void cantxcb(){
 	Serial2_writeBytes(txcpltmsg, sizeof(txcpltmsg)-1);
 }
 
-void sayYes(uint8_t *str){
-	str[0]='Y';
-	str[1]='e';
-	str[2]='s';
-}
-
-void sayNo(uint8_t *str){
-	str[0]='N';
-	str[1]='o';
-	str[2]=' ';
-}
-
-void sendFrameFromInput(){
-	if(inputId<=0x7ff){
-		Can_sendStd(inputId,0,dataBuf,(inputLength+1)/2);
-	}else{
-		Can_sendExt(inputId,0,dataBuf,(inputLength+1)/2);
-	}
-}
-
-void spitFrame(){
-	while(Can_available()){
-		if(canFullNotified) canFullNotified = 0;
-		static Can_frame_t leFrame;
-		  Can_read(&leFrame); //16,33,43
-		  static uint8_t gotFrameMsg[] = "\nGOT FRAME!\nID: ????????\nRemote: ???\nData: ?? ?? ?? ?? ?? ?? ?? ??\n";
-		  if(leFrame.isExt){
-			  intToHex(leFrame.core.id, gotFrameMsg+16, 8);
-		  }else{
-			  intToHex(leFrame.core.id, gotFrameMsg+16, 3);
-			  for(int i=0; i<5; i++){gotFrameMsg[19+i]=' ';}
-		  }
-		  leFrame.isRemote ? sayYes(gotFrameMsg+33) : sayNo(gotFrameMsg+33);
-		  for(int i=0; i<8; i++){
-			  if(i<leFrame.core.dlc){
-				  intToHex(leFrame.core.Data[i], gotFrameMsg+43+(3*i), 2);
-			  }else{
-				  gotFrameMsg[3*i+43]=' '; gotFrameMsg[3*i+44]=' ';
-			  }
-		  }
-		  Serial2_writeBytes(gotFrameMsg, sizeof(gotFrameMsg)-1);
-	}
-}
-
-void stashFrame(){
-	if(Can_available()==CAN_BUFFER_LENGTH && canFullNotified==0){
-		canFullNotified=1;
-		static uint8_t canFullMsg[] = "\nHURRY UP! CAN BUFFER OVERFLOWING!!!\n";
-		Serial2_writeBytes(canFullMsg, sizeof(canFullMsg)-1);
-	}
-}
+//void stashFrame(){
+//	if(Can_available()==CAN_BUFFER_LENGTH && canFullNotified==0){
+//		canFullNotified=1;
+//		static uint8_t canFullMsg[] = "\nHURRY UP! CAN BUFFER OVERFLOWING!!!\n";
+//		Serial2_writeBytes(canFullMsg, sizeof(canFullMsg)-1);
+//	}
+//}
 
 void SendFrameUI(){
 	while(1){
@@ -240,65 +212,12 @@ void SendFrameUI(){
 	}
 }
 
-void PeriodicFrameUI(){
-	static uint8_t tmractivatedmsg[] = "\nTimers activated: ????????????????\n";
-	Serial2_writeBuf(tmractivatedmsg);
-}
-
-void doCommand(){
-	switch(Serial2_read()){
-	case 'S':
-	case 's':
-		Can_setRxCallback(stashFrame);
-		static uint8_t sendframemsg[] = "\nSend Frame: type \"[id],[data][enter]\"\n";
-		Serial2_writeBytes(sendframemsg, sizeof(sendframemsg)-1);
-		SendFrameUI();
-		break;
-	case 'F':
-	case 'f':
-		break;
-	case 'P':
-	case 'p':
-		Can_setRxCallback(stashFrame);
-		PeriodicFrameUI();
-		break;
-	case 0x0a:
-	case 0x0d:
-	case ' ':
-	case '\t':
-		break;
-	case 0x1b: //esc
-	case 0x08: ; //bksp
-		static uint8_t rootmenumsg[] = "\nAlready at root menu!\n";
-		Serial2_writeBytes(rootmenumsg, sizeof(rootmenumsg)-1);
-		break;
-	default: ; //hacky empty statement to fix the mysterious label error
-		static uint8_t helpmsg[] = "\nUSAGE:\n\
+uint8_t helpmsg[] = "\nUSAGE:\n\
 				S: Send Frame\n\
 				F: Filter Management\n\
 				P: Periodic Send\n\
 				H: This Message\n\
 				esc: Abort Command\n";
-		Serial2_writeBuf(helpmsg);
-		break;
-	}
-	spitFrame();
-	Can_setRxCallback(spitFrame);
-}
-
-void doTimers(){
-	for(int i=0; i<TIMER_COUNT; i++){
-		if(timerDelays[i]){
-			if((millis-timerPhases[i])/timerDelays[i]==0){
-				if(timerFrames[i].isExt){
-					Can_sendExt(timerFrames[i].core.id, timerFrames[i].isRemote, timerFrames[i].core.Data, timerFrames[i].core.dlc);
-				}else{
-					Can_sendStd(timerFrames[i].core.id, timerFrames[i].isRemote, timerFrames[i].core.Data, timerFrames[i].core.dlc);
-				}
-			}
-		}
-	}
-}
 
 /* USER CODE END PFP */
 
@@ -325,80 +244,129 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_CAN1_Init();
-  MX_CRC_Init();
-  MX_RTC_Init();
   MX_USART2_UART_Init();
+  MX_WWDG_Init();
 
   /* USER CODE BEGIN 2 */
   Serial2_begin();
   static uint8_t startmsg[] = "boot diag\n";
   Serial2_writeBytes(startmsg, sizeof(startmsg)-1);
 
-  Can_begin();
-  Can_setTxCallback(cantxcb);
-  Can_setRxCallback(spitFrame);
-//  Can_addFilterStd(0x001, 0);
-//  Can_addMaskedFilterStd(0x002, 0x7FF, 0);
-//  Can_addFilterExt(0x003, 0);
-//  Can_addMaskedFilterExt(0x004, 0x1FFFFFFF, 0);
-  Can_addMaskedFilterStd(0,0,0); //catch all
-  Can_addMaskedFilterExt(0,0,0);
+  bxCan_begin(&hcan1, &mainCanRxQHandle, &mainCanTxQHandle);
+  bxCan_setTxCallback(cantxcb); /*TODO fix cb */
+  bxCan_addMaskedFilterStd(0,0,0); //catch all
+  bxCan_addMaskedFilterExt(0,0,0);
   /* USER CODE END 2 */
+
+  /* Create the mutex(es) */
+  /* definition and creation of UartTxMtx */
+  osMutexDef(UartTxMtx);
+  UartTxMtxHandle = osMutexCreate(osMutex(UartTxMtx));
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* Create the timer(s) */
+  /* definition and creation of WWDGTmr */
+  osTimerDef(WWDGTmr, TmrKickDog);
+  WWDGTmrHandle = osTimerCreate(osTimer(WWDGTmr), osTimerPeriodic, NULL);
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  osTimerStart(WWDGTmrHandle, 16);
+  /* USER CODE END RTOS_TIMERS */
+
+  /* Create the thread(s) */
+  /* definition and creation of processCan */
+  osThreadDef(processCan, doProcessCan, osPriorityLow, 0, 512);
+  processCanHandle = osThreadCreate(osThread(processCan), NULL);
+
+  /* definition and creation of ProcessUart */
+  osThreadDef(ProcessUart, doProcessUart, osPriorityNormal, 0, 512);
+  ProcessUartHandle = osThreadCreate(osThread(ProcessUart), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Create the queue(s) */
+  /* definition and creation of mainCanTxQ */
+  osMessageQDef(mainCanTxQ, 64, Can_frame_t);
+  mainCanTxQHandle = osMessageCreate(osMessageQ(mainCanTxQ), NULL);
+
+  /* definition and creation of mainCanRxQ */
+  osMessageQDef(mainCanRxQ, 64, Can_frame_t);
+  mainCanRxQHandle = osMessageCreate(osMessageQ(mainCanRxQ), NULL);
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+ 
+
+  /* Start scheduler */
+  osKernelStart();
+  
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1){
-	  if(Serial2_available()){
-		  doCommand();
-		  static uint8_t delims1[] = {',',';'};
-		  static uint8_t delims2[] = {0x0d,0x0a};
-		  if(inputMode){//entering data
-			  if(Serial2_findAny(delims2, sizeof(delims2))==0){
-				  while(Serial2_findAny(delims2, sizeof(delims2))==0) Serial2_read();
-				  sendFrameFromInput();
-				  inputId = 0;
-				  inputMode = 0;
-				  for(int i=0; i<8; i++){dataBuf[i]=0;}
-				  inputLength = 0;
-			  }else{
-				  toCaps(Serial2_buffer, 1);
-				  uint8_t hex = fromHex(Serial2_read());
-					  if(hex <= 0x0f){
-					  dataBuf[inputLength/2] = dataBuf[inputLength/2]<<4;
-					  dataBuf[inputLength/2] += hex;
-					  inputLength++;
-					  if(inputLength > 16){
-						  static uint8_t idovfmsg[] = "\nDATA TOO LONG! RETRY.\n";
-						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-						  inputLength = 0;
-						  inputId = 0;
-						  inputMode = 0;
-						  for(int i=0; i<8; i++){dataBuf[i]=0;}
-					  }
-				  }
-			  }
-		  }else{//entering id
-			  if(Serial2_findAny(delims1, sizeof(delims1))==0){
-				  while(Serial2_findAny(delims1, sizeof(delims1))==0) Serial2_read();
-				  inputMode = 1;
-				  inputLength = 0;
-			  }else{
-				  toCaps(Serial2_buffer, 1);
-				  uint8_t hex = fromHex(Serial2_read());
-				  if(hex <= 0x0f){
-					  inputId = inputId<<4;
-					  inputId += hex;
-					  inputLength++;
-					  if(inputLength > 8){
-						  static uint8_t idovfmsg[] = "\nID TOO LONG! RETRY.\n";
-						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-						  inputLength = 0;
-						  inputId = 0;
-					  }
-				  }
-			  }
-		  }
-	  }
+//	  if(Serial2_available()){
+//		  doCommand();
+//		  static uint8_t delims1[] = {',',';'};
+//		  static uint8_t delims2[] = {0x0d,0x0a};
+//		  if(inputMode){//entering data
+//			  if(Serial2_findAny(delims2, sizeof(delims2))==0){
+//				  while(Serial2_findAny(delims2, sizeof(delims2))==0) Serial2_read();
+//				  sendFrameFromInput();
+//				  inputId = 0;
+//				  inputMode = 0;
+//				  for(int i=0; i<8; i++){dataBuf[i]=0;}
+//				  inputLength = 0;
+//			  }else{
+//				  toCaps(Serial2_buffer, 1);
+//				  uint8_t hex = fromHex(Serial2_read());
+//					  if(hex <= 0x0f){
+//					  dataBuf[inputLength/2] = dataBuf[inputLength/2]<<4;
+//					  dataBuf[inputLength/2] += hex;
+//					  inputLength++;
+//					  if(inputLength > 16){
+//						  static uint8_t idovfmsg[] = "\nDATA TOO LONG! RETRY.\n";
+//						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
+//						  inputLength = 0;
+//						  inputId = 0;
+//						  inputMode = 0;
+//						  for(int i=0; i<8; i++){dataBuf[i]=0;}
+//					  }
+//				  }
+//			  }
+//		  }else{//entering id
+//			  if(Serial2_findAny(delims1, sizeof(delims1))==0){
+//				  while(Serial2_findAny(delims1, sizeof(delims1))==0) Serial2_read();
+//				  inputMode = 1;
+//				  inputLength = 0;
+//			  }else{
+//				  toCaps(Serial2_buffer, 1);
+//				  uint8_t hex = fromHex(Serial2_read());
+//				  if(hex <= 0x0f){
+//					  inputId = inputId<<4;
+//					  inputId += hex;
+//					  inputLength++;
+//					  if(inputLength > 8){
+//						  static uint8_t idovfmsg[] = "\nID TOO LONG! RETRY.\n";
+//						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
+//						  inputLength = 0;
+//						  inputId = 0;
+//					  }
+//				  }
+//			  }
+//		  }
+//	  }
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
@@ -419,8 +387,7 @@ void SystemClock_Config(void)
 
     /**Initializes the CPU, AHB and APB busses clocks 
     */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = 0;
   RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
@@ -450,9 +417,8 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_USART2;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
-  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
@@ -474,92 +440,26 @@ void SystemClock_Config(void)
   HAL_SYSTICK_CLKSourceConfig(SYSTICK_CLKSOURCE_HCLK);
 
   /* SysTick_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(SysTick_IRQn, 15, 0);
 }
 
 /* CAN1 init function */
 static void MX_CAN1_Init(void)
 {
 
-  hcan1.Instance = CAN;
+  hcan1.Instance = CAN1;
   hcan1.Init.Prescaler = 10;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SJW = CAN_SJW_3TQ;
   hcan1.Init.BS1 = CAN_BS1_12TQ;
   hcan1.Init.BS2 = CAN_BS2_3TQ;
   hcan1.Init.TTCM = DISABLE;
-  hcan1.Init.ABOM = DISABLE;
-  hcan1.Init.AWUM = DISABLE;
+  hcan1.Init.ABOM = ENABLE;
+  hcan1.Init.AWUM = ENABLE;
   hcan1.Init.NART = DISABLE;
   hcan1.Init.RFLM = DISABLE;
   hcan1.Init.TXFP = DISABLE;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-}
-
-/* CRC init function */
-static void MX_CRC_Init(void)
-{
-
-  hcrc.Instance = CRC;
-  hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_DISABLE;
-  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_DISABLE;
-  hcrc.Init.GeneratingPolynomial = 7;
-  hcrc.Init.CRCLength = CRC_POLYLENGTH_16B;
-  hcrc.Init.InitValue = 0;
-  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
-  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
-  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
-  if (HAL_CRC_Init(&hcrc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-}
-
-/* RTC init function */
-static void MX_RTC_Init(void)
-{
-
-  RTC_TimeTypeDef sTime;
-  RTC_DateTypeDef sDate;
-
-    /**Initialize RTC Only 
-    */
-  hrtc.Instance = RTC;
-  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-  hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = 255;
-  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
-  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-    /**Initialize RTC and set the Time and Date 
-    */
-  sTime.Hours = 0x0;
-  sTime.Minutes = 0x0;
-  sTime.Seconds = 0x0;
-  sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
-  sTime.StoreOperation = RTC_STOREOPERATION_RESET;
-  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  sDate.WeekDay = RTC_WEEKDAY_TUESDAY;
-  sDate.Month = RTC_MONTH_NOVEMBER;
-  sDate.Date = 0x29;
-  sDate.Year = 0x16;
-
-  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
   {
     Error_Handler();
   }
@@ -571,7 +471,7 @@ static void MX_USART2_UART_Init(void)
 {
 
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 230400;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -581,6 +481,22 @@ static void MX_USART2_UART_Init(void)
   huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
   if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+}
+
+/* WWDG init function */
+static void MX_WWDG_Init(void)
+{
+
+  hwwdg.Instance = WWDG;
+  hwwdg.Init.Prescaler = WWDG_PRESCALER_8;
+  hwwdg.Init.Window = 127;
+  hwwdg.Init.Counter = 127;
+  hwwdg.Init.EWIMode = WWDG_EWI_DISABLE;
+  if (HAL_WWDG_Init(&hwwdg) != HAL_OK)
   {
     Error_Handler();
   }
@@ -597,8 +513,11 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
 
@@ -608,6 +527,8 @@ static void MX_DMA_Init(void)
         * Output
         * EVENT_OUT
         * EXTI
+        * Free pins are configured automatically as Analog (this feature is enabled through 
+        * the Code Generation settings)
 */
 static void MX_GPIO_Init(void)
 {
@@ -618,22 +539,215 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin : LD3_Pin */
-  GPIO_InitStruct.Pin = LD3_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  /*Configure GPIO pins : PC14 PC15 */
+  GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_15;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD3_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PA0 PA1 PA3 PA4 
+                           PA5 PA6 PA7 PA8 
+                           PA9 PA10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_4 
+                          |GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_8 
+                          |GPIO_PIN_9|GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB0 PB1 PB3 PB4 
+                           PB5 PB6 PB7 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3|GPIO_PIN_4 
+                          |GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PH3 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
 
 }
 
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* doProcessCan function */
+void doProcessCan(void const * argument)
+{
+
+  /* USER CODE BEGIN 5 */
+  static Can_frame_t newFrame;
+
+  /*JSON goodness*/
+  static uint8_t truemsg[] = "true";
+  static uint8_t falsemsg[] = "false";
+  static uint8_t stdidmsg[] = "xxx";
+  static uint8_t extidmsg[] = "xxxxxxxx";
+  static uint8_t datamsg[] = ",\"xx\"";
+  static uint8_t framemsg1[] = "{\"type\":\"frame\",\"ide\":"; //bool
+  static uint8_t framemsg2[] = ",\"rtr\":";		//bool
+  static uint8_t framemsg3[] = ",\"dlc\":";		//number
+  static uint8_t framemsg4[] = ",\"id\":\"";		//string (hex)
+  static uint8_t framemsg5[] = "\",\"data\":[";	//strings (hex)
+  static uint8_t framemsg6[] = "]}\n";			//for data frames
+  static uint8_t framemsg5b[] = "\"}\n";			//for remote frames
+
+  /* Infinite loop */
+  for(;;)
+  {
+	  xQueueReceive(mainCanRxQHandle, &newFrame, portMAX_DELAY);
+	  xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+
+	  /*bang out the frame in JSON*/
+	  Serial2_writeBuf(framemsg1);
+	  newFrame.isExt ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+	  Serial2_writeBuf(framemsg2);
+	  newFrame.isRemote ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+	  Serial2_writeBuf(framemsg3);
+	  Serial2_write(toHex(newFrame.dlc));
+	  Serial2_writeBuf(framemsg4);
+	  if(newFrame.isExt){
+		  intToHex(newFrame.id, extidmsg, 8);
+		  Serial2_writeBuf(extidmsg);
+	  }else{
+		  intToHex(newFrame.id, stdidmsg, 3);
+		  Serial2_writeBuf(stdidmsg);
+	  }
+	  if(newFrame.isRemote){
+		  Serial2_writeBuf(framemsg5b);
+	  }else{
+		  Serial2_writeBuf(framemsg5);
+		  for(int i=0; i<newFrame.dlc; i++){
+			  intToHex(newFrame.Data[i], datamsg+2, 2);
+			  if(i==0){
+				  Serial2_writeBytes(datamsg+1, sizeof(datamsg)-2);
+			  }else{
+				  Serial2_writeBuf(datamsg);
+			  }
+		  }
+		  Serial2_writeBuf(framemsg6);
+	  }
+
+	  xSemaphoreGive(UartTxMtxHandle);
+  }
+  /* USER CODE END 5 */ 
+}
+
+static void waitTilAvail(uint length){ //blocks current taks (runs others) until true
+	while(Serial2_available() < length){
+		osDelay(1);
+	}
+}
+
+void parseFrame(uint8_t isExt, uint8_t isRemote){
+	static Can_frame_t newFrame;
+	newFrame.isExt = isExt;
+	newFrame.isRemote = isRemote;
+	waitTilAvail(1);
+	newFrame.dlc = fromHex(Serial2_read());
+	/*TODO check for valid hex, for all operations below*/
+	newFrame.id = 0;
+	if(isExt){
+		waitTilAvail(8);
+		for(int i=0; i<8; i++) newFrame.id |= fromHex(Serial2_read()) << ((7-i)*4);
+	}else{
+		waitTilAvail(3);
+		for(int i=0; i<3; i++) newFrame.id |= fromHex(Serial2_read()) << ((2-i)*4);
+	}
+	if(!isRemote){
+		waitTilAvail(newFrame.dlc*2);
+		for(int i=0; i<newFrame.dlc; i++){
+			newFrame.Data[i] = fromHex(Serial2_read()) << 4;
+			newFrame.Data[i] |= fromHex(Serial2_read()) & 0x0f;
+		}
+	}
+	bxCan_sendFrame(&newFrame);
+}
+
+/* doProcessUart function */
+void doProcessUart(void const * argument)
+{
+	/* USER CODE BEGIN doProcessUart */
+	/* Infinite loop */
+	for(;;)
+	{
+		if(Serial2_available()){
+			static uint8_t cmd;
+			cmd = Serial2_read();
+			switch(cmd){
+			case '-':
+				parseFrame(0,0);
+				break;
+			case '=':
+				parseFrame(1,0);
+				break;
+			case '_':
+				parseFrame(0,1);
+				break;
+			case '+':
+				parseFrame(1,1);
+				break;
+			case ',':
+				//parseFilter(0,0);
+				break;
+			case '.':
+				//parseFilter(1,0);
+				break;
+			case '<':
+				//parseFilter(0,1);
+				break;
+			case '>':
+				//parseFilter(1,1);
+				break;
+			case 'H':
+			case 'h':
+				//displayHelp();
+				break;
+			default: ; //do nothing
+			}
+		}else{
+			osDelay(1);
+		}
+	}
+	/* USER CODE END doProcessUart */
+}
+
+/* TmrKickDog function */
+void TmrKickDog(void const * argument)
+{
+  /* USER CODE BEGIN TmrKickDog */
+  taskENTER_CRITICAL();
+  HAL_WWDG_Refresh(&hwwdg);
+  taskEXIT_CRITICAL();
+  /* USER CODE END TmrKickDog */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM6 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+/* USER CODE BEGIN Callback 0 */
+
+/* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6) {
+    HAL_IncTick();
+  }
+/* USER CODE BEGIN Callback 1 */
+
+/* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
