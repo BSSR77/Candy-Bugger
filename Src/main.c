@@ -253,11 +253,7 @@ int main(void)
   Serial2_writeBytes(startmsg, sizeof(startmsg)-1);
 
   bxCan_begin(&hcan1, &mainCanRxQHandle, &mainCanTxQHandle);
-  bxCan_setTxCallback(cantxcb);
-//  Can_addFilterStd(0x001, 0);
-//  Can_addMaskedFilterStd(0x002, 0x7FF, 0);
-//  Can_addFilterExt(0x003, 0);
-//  Can_addMaskedFilterExt(0x004, 0x1FFFFFFF, 0);
+  bxCan_setTxCallback(cantxcb); /*TODO fix cb */
   bxCan_addMaskedFilterStd(0,0,0); //catch all
   bxCan_addMaskedFilterExt(0,0,0);
   /* USER CODE END 2 */
@@ -282,7 +278,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
-  /*TODO start watchdog kicker*/
+  osTimerStart(WWDGTmrHandle, 16);
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the thread(s) */
