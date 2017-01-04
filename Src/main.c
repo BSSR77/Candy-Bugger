@@ -75,6 +75,7 @@ static uint32_t inputId;
 static uint8_t dataBuf[8];
 static uint8_t inputMode = 0; //0=id, 1=data
 static uint8_t inputLength = 0;
+static uint8_t CanTxCbState;
 
 /* USER CODE END PV */
 
@@ -145,18 +146,6 @@ int strToInt(uint8_t *str, uint8_t index, uint8_t length){
 void cantxcb(){
 	static uint8_t txcpltmsg[] = "\nSENT!\n";
 	Serial2_writeBytes(txcpltmsg, sizeof(txcpltmsg)-1);
-}
-
-void sayYes(uint8_t *str){
-	str[0]='Y';
-	str[1]='e';
-	str[2]='s';
-}
-
-void sayNo(uint8_t *str){
-	str[0]='N';
-	str[1]='o';
-	str[2]=' ';
 }
 
 //void stashFrame(){
