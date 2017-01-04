@@ -639,6 +639,37 @@ void doProcessCan(void const * argument)
   /* USER CODE END 5 */ 
 }
 
+static void waitTilAvail(uint length){ //blocks current taks (runs others) until true
+	while(Serial2_available() < length){
+		osDelay(1);
+	}
+}
+
+void parseFrame(uint8_t isExt, uint8_t isRemote){
+	static Can_frame_t newFrame;
+	newFrame.isExt = isExt;
+	newFrame.isRemote = isRemote;
+	waitTilAvail(1);
+	newFrame.dlc = fromHex(Serial2_read());
+	/*TODO check for valid hex, for all operations below*/
+	newFrame.id = 0;
+	if(isExt){
+		waitTilAvail(8);
+		for(int i=0; i<8; i++) newFrame.id |= fromHex(Serial2_read()) << ((7-i)*4);
+	}else{
+		waitTilAvail(3);
+		for(int i=0; i<3; i++) newFrame.id |= fromHex(Serial2_read()) << ((2-i)*4);
+	}
+	if(!isRemote){
+		waitTilAvail(newFrame.dlc*2);
+		for(int i=0; i<newFrame.dlc; i++){
+			newFrame.Data[i] = fromHex(Serial2_read()) << 4;
+			newFrame.Data[i] |= fromHex(Serial2_read()) & 0x0f;
+		}
+	}
+	bxCan_sendFrame(&newFrame);
+}
+
 /* doProcessUart function */
 void doProcessUart(void const * argument)
 {
@@ -651,16 +682,16 @@ void doProcessUart(void const * argument)
 			cmd = Serial2_read();
 			switch(cmd){
 			case '-':
-				//parseFrame(0,0);
+				parseFrame(0,0);
 				break;
 			case '=':
-				//parseFrame(1,0);
+				parseFrame(1,0);
 				break;
 			case '_':
-				//parseFrame(0,1);
+				parseFrame(0,1);
 				break;
 			case '+':
-				//parseFrame(1,1);
+				parseFrame(1,1);
 				break;
 			case ',':
 				//parseFilter(0,0);
