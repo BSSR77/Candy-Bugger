@@ -433,9 +433,6 @@ void HAL_CAN_TxCpltCallback(CAN_HandleTypeDef* hcan){
  * Executes user-defined callback
  */
 void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan){
-	HAL_CAN_Receive_IT(hcan_handle, 0);		// Immediately begin listening for new frames again
-	// TODO: Check the logic of this section; will the Rx mailboxes get overrun from the processing time if continuously banged?
-	// Copy the received frame to smaller Can_Frame_t type
 	static Can_frame_t received;
 	received.isRemote = (rxFrameBuf.RTR) ? 1 : 0;
 	received.isExt    = (rxFrameBuf.IDE) ? 1 : 0;
@@ -453,6 +450,7 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan){
 	xQueueSendFromISR(*rxQ, &received, NULL);
 
 	bxCan_Rxcb();	// User-defined receive callback
+	HAL_CAN_Receive_IT(hcan_handle, 0);
 }
 
 /* CHECKED

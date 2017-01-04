@@ -37,8 +37,6 @@
 #include "cmsis_os.h"
 
 /* USER CODE BEGIN 0 */
-extern uint millis;
-extern doTimers();
 
 /* USER CODE END 0 */
 
@@ -60,8 +58,6 @@ extern TIM_HandleTypeDef htim6;
 void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
-	millis++;
-	doTimers();
 
   /* USER CODE END SysTick_IRQn 0 */
   osSystickHandler();

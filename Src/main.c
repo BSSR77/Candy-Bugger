@@ -48,7 +48,8 @@
 /* USER CODE BEGIN Includes */
 #include "serial.h"
 #include "can.h"
-#define TIMER_COUNT 16
+
+
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
@@ -74,11 +75,6 @@ static uint32_t inputId;
 static uint8_t dataBuf[8];
 static uint8_t inputMode = 0; //0=id, 1=data
 static uint8_t inputLength = 0;
-static uint8_t canFullNotified = 0;
-uint32_t millis = 0;
-uint16_t timerDelays[TIMER_COUNT];
-uint32_t timerPhases[TIMER_COUNT];
-Can_frame_t timerFrames[TIMER_COUNT];
 
 /* USER CODE END PV */
 
@@ -163,45 +159,13 @@ void sayNo(uint8_t *str){
 	str[2]=' ';
 }
 
-void sendFrameFromInput(){
-	if(inputId<=0x7ff){
-		Can_sendStd(inputId,0,dataBuf,(inputLength+1)/2);
-	}else{
-		Can_sendExt(inputId,0,dataBuf,(inputLength+1)/2);
-	}
-}
-
-void spitFrame(){
-	while(Can_available()){
-		if(canFullNotified) canFullNotified = 0;
-		static Can_frame_t leFrame;
-		  Can_read(&leFrame); //16,33,43
-		  static uint8_t gotFrameMsg[] = "\nGOT FRAME!\nID: ????????\nRemote: ???\nData: ?? ?? ?? ?? ?? ?? ?? ??\n";
-		  if(leFrame.isExt){
-			  intToHex(leFrame.core.id, gotFrameMsg+16, 8);
-		  }else{
-			  intToHex(leFrame.core.id, gotFrameMsg+16, 3);
-			  for(int i=0; i<5; i++){gotFrameMsg[19+i]=' ';}
-		  }
-		  leFrame.isRemote ? sayYes(gotFrameMsg+33) : sayNo(gotFrameMsg+33);
-		  for(int i=0; i<8; i++){
-			  if(i<leFrame.core.dlc){
-				  intToHex(leFrame.core.Data[i], gotFrameMsg+43+(3*i), 2);
-			  }else{
-				  gotFrameMsg[3*i+43]=' '; gotFrameMsg[3*i+44]=' ';
-			  }
-		  }
-		  Serial2_writeBytes(gotFrameMsg, sizeof(gotFrameMsg)-1);
-	}
-}
-
-void stashFrame(){
-	if(Can_available()==CAN_BUFFER_LENGTH && canFullNotified==0){
-		canFullNotified=1;
-		static uint8_t canFullMsg[] = "\nHURRY UP! CAN BUFFER OVERFLOWING!!!\n";
-		Serial2_writeBytes(canFullMsg, sizeof(canFullMsg)-1);
-	}
-}
+//void stashFrame(){
+//	if(Can_available()==CAN_BUFFER_LENGTH && canFullNotified==0){
+//		canFullNotified=1;
+//		static uint8_t canFullMsg[] = "\nHURRY UP! CAN BUFFER OVERFLOWING!!!\n";
+//		Serial2_writeBytes(canFullMsg, sizeof(canFullMsg)-1);
+//	}
+//}
 
 void SendFrameUI(){
 	while(1){
@@ -259,65 +223,12 @@ void SendFrameUI(){
 	}
 }
 
-void PeriodicFrameUI(){
-	static uint8_t tmractivatedmsg[] = "\nTimers activated: ????????????????\n";
-	Serial2_writeBuf(tmractivatedmsg);
-}
-
-void doCommand(){
-	switch(Serial2_read()){
-	case 'S':
-	case 's':
-		Can_setRxCallback(stashFrame);
-		static uint8_t sendframemsg[] = "\nSend Frame: type \"[id],[data][enter]\"\n";
-		Serial2_writeBytes(sendframemsg, sizeof(sendframemsg)-1);
-		SendFrameUI();
-		break;
-	case 'F':
-	case 'f':
-		break;
-	case 'P':
-	case 'p':
-		Can_setRxCallback(stashFrame);
-		PeriodicFrameUI();
-		break;
-	case 0x0a:
-	case 0x0d:
-	case ' ':
-	case '\t':
-		break;
-	case 0x1b: //esc
-	case 0x08: ; //bksp
-		static uint8_t rootmenumsg[] = "\nAlready at root menu!\n";
-		Serial2_writeBytes(rootmenumsg, sizeof(rootmenumsg)-1);
-		break;
-	default: ; //hacky empty statement to fix the mysterious label error
-		static uint8_t helpmsg[] = "\nUSAGE:\n\
+uint8_t helpmsg[] = "\nUSAGE:\n\
 				S: Send Frame\n\
 				F: Filter Management\n\
 				P: Periodic Send\n\
 				H: This Message\n\
 				esc: Abort Command\n";
-		Serial2_writeBuf(helpmsg);
-		break;
-	}
-	spitFrame();
-	Can_setRxCallback(spitFrame);
-}
-
-void doTimers(){
-	for(int i=0; i<TIMER_COUNT; i++){
-		if(timerDelays[i]){
-			if((millis-timerPhases[i])/timerDelays[i]==0){
-				if(timerFrames[i].isExt){
-					Can_sendExt(timerFrames[i].core.id, timerFrames[i].isRemote, timerFrames[i].core.Data, timerFrames[i].core.dlc);
-				}else{
-					Can_sendStd(timerFrames[i].core.id, timerFrames[i].isRemote, timerFrames[i].core.Data, timerFrames[i].core.dlc);
-				}
-			}
-		}
-	}
-}
 
 /* USER CODE END PFP */
 
@@ -352,15 +263,14 @@ int main(void)
   static uint8_t startmsg[] = "boot diag\n";
   Serial2_writeBytes(startmsg, sizeof(startmsg)-1);
 
-  Can_begin();
-  Can_setTxCallback(cantxcb);
-  Can_setRxCallback(spitFrame);
+  bxCan_begin(&hcan1, &mainCanRxQHandle, &mainCanTxQHandle);
+  bxCan_setTxCallback(cantxcb);
 //  Can_addFilterStd(0x001, 0);
 //  Can_addMaskedFilterStd(0x002, 0x7FF, 0);
 //  Can_addFilterExt(0x003, 0);
 //  Can_addMaskedFilterExt(0x004, 0x1FFFFFFF, 0);
-  Can_addMaskedFilterStd(0,0,0); //catch all
-  Can_addMaskedFilterExt(0,0,0);
+  bxCan_addMaskedFilterStd(0,0,0); //catch all
+  bxCan_addMaskedFilterExt(0,0,0);
   /* USER CODE END 2 */
 
   /* Create the mutex(es) */
@@ -383,6 +293,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
+  /*TODO start watchdog kicker*/
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the thread(s) */
@@ -420,57 +331,57 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1){
-	  if(Serial2_available()){
-		  doCommand();
-		  static uint8_t delims1[] = {',',';'};
-		  static uint8_t delims2[] = {0x0d,0x0a};
-		  if(inputMode){//entering data
-			  if(Serial2_findAny(delims2, sizeof(delims2))==0){
-				  while(Serial2_findAny(delims2, sizeof(delims2))==0) Serial2_read();
-				  sendFrameFromInput();
-				  inputId = 0;
-				  inputMode = 0;
-				  for(int i=0; i<8; i++){dataBuf[i]=0;}
-				  inputLength = 0;
-			  }else{
-				  toCaps(Serial2_buffer, 1);
-				  uint8_t hex = fromHex(Serial2_read());
-					  if(hex <= 0x0f){
-					  dataBuf[inputLength/2] = dataBuf[inputLength/2]<<4;
-					  dataBuf[inputLength/2] += hex;
-					  inputLength++;
-					  if(inputLength > 16){
-						  static uint8_t idovfmsg[] = "\nDATA TOO LONG! RETRY.\n";
-						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-						  inputLength = 0;
-						  inputId = 0;
-						  inputMode = 0;
-						  for(int i=0; i<8; i++){dataBuf[i]=0;}
-					  }
-				  }
-			  }
-		  }else{//entering id
-			  if(Serial2_findAny(delims1, sizeof(delims1))==0){
-				  while(Serial2_findAny(delims1, sizeof(delims1))==0) Serial2_read();
-				  inputMode = 1;
-				  inputLength = 0;
-			  }else{
-				  toCaps(Serial2_buffer, 1);
-				  uint8_t hex = fromHex(Serial2_read());
-				  if(hex <= 0x0f){
-					  inputId = inputId<<4;
-					  inputId += hex;
-					  inputLength++;
-					  if(inputLength > 8){
-						  static uint8_t idovfmsg[] = "\nID TOO LONG! RETRY.\n";
-						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-						  inputLength = 0;
-						  inputId = 0;
-					  }
-				  }
-			  }
-		  }
-	  }
+//	  if(Serial2_available()){
+//		  doCommand();
+//		  static uint8_t delims1[] = {',',';'};
+//		  static uint8_t delims2[] = {0x0d,0x0a};
+//		  if(inputMode){//entering data
+//			  if(Serial2_findAny(delims2, sizeof(delims2))==0){
+//				  while(Serial2_findAny(delims2, sizeof(delims2))==0) Serial2_read();
+//				  sendFrameFromInput();
+//				  inputId = 0;
+//				  inputMode = 0;
+//				  for(int i=0; i<8; i++){dataBuf[i]=0;}
+//				  inputLength = 0;
+//			  }else{
+//				  toCaps(Serial2_buffer, 1);
+//				  uint8_t hex = fromHex(Serial2_read());
+//					  if(hex <= 0x0f){
+//					  dataBuf[inputLength/2] = dataBuf[inputLength/2]<<4;
+//					  dataBuf[inputLength/2] += hex;
+//					  inputLength++;
+//					  if(inputLength > 16){
+//						  static uint8_t idovfmsg[] = "\nDATA TOO LONG! RETRY.\n";
+//						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
+//						  inputLength = 0;
+//						  inputId = 0;
+//						  inputMode = 0;
+//						  for(int i=0; i<8; i++){dataBuf[i]=0;}
+//					  }
+//				  }
+//			  }
+//		  }else{//entering id
+//			  if(Serial2_findAny(delims1, sizeof(delims1))==0){
+//				  while(Serial2_findAny(delims1, sizeof(delims1))==0) Serial2_read();
+//				  inputMode = 1;
+//				  inputLength = 0;
+//			  }else{
+//				  toCaps(Serial2_buffer, 1);
+//				  uint8_t hex = fromHex(Serial2_read());
+//				  if(hex <= 0x0f){
+//					  inputId = inputId<<4;
+//					  inputId += hex;
+//					  inputLength++;
+//					  if(inputLength > 8){
+//						  static uint8_t idovfmsg[] = "\nID TOO LONG! RETRY.\n";
+//						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
+//						  inputLength = 0;
+//						  inputId = 0;
+//					  }
+//				  }
+//			  }
+//		  }
+//	  }
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
@@ -686,10 +597,59 @@ void doProcessCan(void const * argument)
 {
 
   /* USER CODE BEGIN 5 */
+  static Can_frame_t newFrame;
+
+  /*JSON goodness*/
+  static uint8_t truemsg[] = "true";
+  static uint8_t falsemsg[] = "false";
+  static uint8_t stdidmsg[] = "xxx";
+  static uint8_t extidmsg[] = "xxxxxxxx";
+  static uint8_t datamsg[] = ",\"xx\"";
+  static uint8_t framemsg1[] = "{\"type\":\"frame\",\"ide\":"; //bool
+  static uint8_t framemsg2[] = ",\"rtr\":";		//bool
+  static uint8_t framemsg3[] = ",\"dlc\":";		//number
+  static uint8_t framemsg4[] = ",\"id\":\"";		//string (hex)
+  static uint8_t framemsg5[] = "\",\"data\":[";	//strings (hex)
+  static uint8_t framemsg6[] = "]}\n";			//for data frames
+  static uint8_t framemsg5b[] = "\"}\n";			//for remote frames
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	  xQueueReceive(mainCanRxQHandle, &newFrame, portMAX_DELAY);
+	  xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+
+	  /*bang out the frame in JSON*/
+	  Serial2_writeBuf(framemsg1);
+	  newFrame.isExt ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+	  Serial2_writeBuf(framemsg2);
+	  newFrame.isRemote ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+	  Serial2_writeBuf(framemsg3);
+	  Serial2_write(toHex(newFrame.dlc));
+	  Serial2_writeBuf(framemsg4);
+	  if(newFrame.isExt){
+		  intToHex(newFrame.id, extidmsg, 8);
+		  Serial2_writeBuf(extidmsg);
+	  }else{
+		  intToHex(newFrame.id, stdidmsg, 3);
+		  Serial2_writeBuf(stdidmsg);
+	  }
+	  if(newFrame.isRemote){
+		  Serial2_writeBuf(framemsg5b);
+	  }else{
+		  Serial2_writeBuf(framemsg5);
+		  for(int i=0; i<newFrame.dlc; i++){
+			  intToHex(newFrame.Data[i], datamsg+2, 2);
+			  if(i==0){
+				  Serial2_writeBytes(datamsg+1, sizeof(datamsg)-2);
+			  }else{
+				  Serial2_writeBuf(datamsg);
+			  }
+		  }
+		  Serial2_writeBuf(framemsg6);
+	  }
+
+	  xSemaphoreGive(UartTxMtxHandle);
   }
   /* USER CODE END 5 */ 
 }
@@ -697,20 +657,58 @@ void doProcessCan(void const * argument)
 /* doProcessUart function */
 void doProcessUart(void const * argument)
 {
-  /* USER CODE BEGIN doProcessUart */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END doProcessUart */
+	/* USER CODE BEGIN doProcessUart */
+	/* Infinite loop */
+	for(;;)
+	{
+		if(Serial2_available()){
+			static uint8_t cmd;
+			cmd = Serial2_read();
+			switch(cmd){
+			case '-':
+				//parseFrame(0,0);
+				break;
+			case '=':
+				//parseFrame(1,0);
+				break;
+			case '_':
+				//parseFrame(0,1);
+				break;
+			case '+':
+				//parseFrame(1,1);
+				break;
+			case ',':
+				//parseFilter(0,0);
+				break;
+			case '.':
+				//parseFilter(1,0);
+				break;
+			case '<':
+				//parseFilter(0,1);
+				break;
+			case '>':
+				//parseFilter(1,1);
+				break;
+			case 'H':
+			case 'h':
+				//displayHelp();
+				break;
+			default: ; //do nothing
+			}
+		}else{
+			osDelay(1);
+		}
+	}
+	/* USER CODE END doProcessUart */
 }
 
 /* TmrKickDog function */
 void TmrKickDog(void const * argument)
 {
   /* USER CODE BEGIN TmrKickDog */
-  
+  taskENTER_CRITICAL();
+  HAL_WWDG_Refresh(&hwwdg);
+  taskEXIT_CRITICAL();
   /* USER CODE END TmrKickDog */
 }
 
