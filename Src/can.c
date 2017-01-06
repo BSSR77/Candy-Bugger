@@ -68,7 +68,7 @@ static osMessageQId *txQ;				// Transmit message queue
 
 static void (*bxCan_Txcb)(); //don't touch. user callbacks.
 static void (*bxCan_Rxcb)();
-static void (*bxCan_Ercb)(uint32_t erCode);
+static void (*bxCan_Ercb)(uint32_t);
 
 static void empty(){}		// Empty function
 
@@ -87,8 +87,6 @@ void bxCan_begin(CAN_HandleTypeDef *hcan, osMessageQId *rx, osMessageQId *tx){
 	hcan_handle->pTxMsg = &txFrameBuf;
 	HAL_CAN_Receive_IT(hcan_handle, 0);
 }
-
-
 
 int bxCan_addMaskedFilterStd(uint16_t id, uint16_t mask, int isRemote){ //2 slots per bank
 	uint8_t rtr = (isRemote==0)?0:1;

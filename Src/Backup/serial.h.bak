@@ -11,14 +11,19 @@
 #include "main.h"
 #include <String.h>
 
+#ifndef SERIAL2_BUFFER_SIZE
 #define SERIAL2_BUFFER_SIZE 64
+#endif
+
+#ifndef SERIAL2_BUFFER_SIZE_TX
 #define SERIAL2_BUFFER_SIZE_TX 128
+#endif
 
 //this is for writing an existing, assigned buffer:
 #define Serial2_writeBuf(str) Serial2_writeBytes((str), sizeof((str))-1)
 
 //this is for writing a string literal:
-#define Serial2_writeStr(str) Serial2_writeStr_Buf=(str); Serial2_writeBytes(Serial2_writeStr_Buf, sizeof((str))-1)
+//#define Serial2_writeStr(str) Serial2_writeStr_Buf=(str); Serial2_writeBytes(Serial2_writeStr_Buf, sizeof((str))-1)
 
 uint8_t Serial2_writeStr_Buf[SERIAL2_BUFFER_SIZE_TX];
 

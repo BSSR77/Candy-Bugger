@@ -63,6 +63,7 @@ WWDG_HandleTypeDef hwwdg;
 
 osThreadId processCanHandle;
 osThreadId ProcessUartHandle;
+osThreadId housekeepingHandle;
 osMessageQId mainCanTxQHandle;
 osMessageQId mainCanRxQHandle;
 osTimerId WWDGTmrHandle;
@@ -70,12 +71,10 @@ osMutexId UartTxMtxHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+static uint8_t FWVersionNumber[] = "0.9.0";
 
-static uint32_t inputId;
-static uint8_t dataBuf[8];
-static uint8_t inputMode = 0; //0=id, 1=data
-static uint8_t inputLength = 0;
-static uint8_t CanTxCbState;
+static uint32_t CanErr = 0;
+static uint16_t CanSent = 0;
 
 /* USER CODE END PV */
 
@@ -89,10 +88,13 @@ static void MX_USART2_UART_Init(void);
 static void MX_WWDG_Init(void);
 void doProcessCan(void const * argument);
 void doProcessUart(void const * argument);
+void doHousekeeping(void const * argument);
 void TmrKickDog(void const * argument);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
+void logError(LogErrorCode_t e, LogErrorLevel_t l);
+
 void toCaps(uint8_t *str, uint8_t length){
 	for(int i=0; i<length; i++){
 		if(str[i]>='a' && str[i]<='z'){
@@ -144,80 +146,279 @@ int strToInt(uint8_t *str, uint8_t index, uint8_t length){
 }
 
 void cantxcb(){
-	static uint8_t txcpltmsg[] = "\nSENT!\n";
-	Serial2_writeBytes(txcpltmsg, sizeof(txcpltmsg)-1);
+	CanSent ++;
 }
 
-//void stashFrame(){
-//	if(Can_available()==CAN_BUFFER_LENGTH && canFullNotified==0){
-//		canFullNotified=1;
-//		static uint8_t canFullMsg[] = "\nHURRY UP! CAN BUFFER OVERFLOWING!!!\n";
-//		Serial2_writeBytes(canFullMsg, sizeof(canFullMsg)-1);
-//	}
-//}
+void canercb(uint32_t e){
+	CanErr = e;
+}
 
-void SendFrameUI(){
-	while(1){
-		if(Serial2_available()){
-			static uint8_t delims1[] = {',',';'};
-			static uint8_t delims2[] = {0x0d,0x0a};
-			if(inputMode){//entering data
-			  if(Serial2_findAny(delims2, sizeof(delims2))==0){
-				  while(Serial2_findAny(delims2, sizeof(delims2))==0) Serial2_read();
-				  sendFrameFromInput();
-				  inputId = 0;
-				  inputMode = 0;
-				  inputLength = 0;
-				  return;
-			  }else{
-				  toCaps(Serial2_buffer, 1);
-				  uint8_t hex = fromHex(Serial2_read());
-					  if(hex <= 0x0f){
-					  dataBuf[inputLength/2] = dataBuf[inputLength/2]<<4;
-					  dataBuf[inputLength/2] += hex;
-					  inputLength++;
-					  if(inputLength > 16){
-						  static uint8_t idovfmsg[] = "\nDATA TOO LONG! RETRY.\n";
-						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-						  inputLength = 0;
-						  inputId = 0;
-						  inputMode = 0;
-						  return;
-					  }
-				  }
-			  }
-			}else{//entering id
-			  if(Serial2_findAny(delims1, sizeof(delims1))==0){
-				  while(Serial2_findAny(delims1, sizeof(delims1))==0) Serial2_read();
-				  inputMode = 1;
-				  inputLength = 0;
-			  }else{
-				  toCaps(Serial2_buffer, 1);
-				  uint8_t hex = fromHex(Serial2_read());
-				  if(hex <= 0x0f){
-					  inputId = inputId<<4;
-					  inputId += hex;
-					  inputLength++;
-					  if(inputLength > 8){
-						  static uint8_t idovfmsg[] = "\nID TOO LONG! RETRY.\n";
-						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-						  inputLength = 0;
-						  inputId = 0;
-						  return;
-					  }
-				  }
-			  }
-			}
-		}
+void logError(LogErrorCode_t e, LogErrorLevel_t l){
+	static uint8_t errlvlwarn[] = "warn";			//error fixed or accounted for
+	static uint8_t errlvlabort[] = "abort";			//error caused function to exit
+	static uint8_t errlvlfatal[] = "fatal";			//shit (and soon the watchdog) hit the fan.
+	static uint8_t errlvldunno[] = "unknown";		//wrong value or lazy implementation
+	static uint8_t errCode[] = "xxxxxxxxxx";	//max is 4 billion for int
+	static uint8_t errmsg1[] = "{\"type\":\"error\",\"code\":";
+	static uint8_t errmsg2[] = ",\"message\":\"";
+	static uint8_t errmsg3[] = "\",\"level\":\"";
+	static uint8_t errmsg4[] = "\"}\n";
+
+	xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+	uint8_t length = intToDec(e, errCode);
+	Serial2_writeBuf(errmsg1);
+	Serial2_writeBytes(errCode, length);
+	Serial2_writeBuf(errmsg2);
+	Serial2_writeBytes(Err_Messages[e].str, Err_Messages[e].length);
+	Serial2_writeBuf(errmsg3);
+	switch(l){
+	case ERR_Fatal:
+		Serial2_writeBuf(errlvlfatal); break;
+	case ERR_Warn:
+		Serial2_writeBuf(errlvlwarn); break;
+	case ERR_Abort:
+		Serial2_writeBuf(errlvlabort); break;
+	default:
+		Serial2_writeBuf(errlvldunno); break;
+	}
+	Serial2_writeBuf(errmsg4);
+	xSemaphoreGive(UartTxMtxHandle);
+}
+
+static void waitTilAvail(uint length){ //blocks current taks (runs others) until true
+	while(Serial2_available() < length){
+		osDelay(1);
 	}
 }
 
-uint8_t helpmsg[] = "\nUSAGE:\n\
-				S: Send Frame\n\
-				F: Filter Management\n\
-				P: Periodic Send\n\
-				H: This Message\n\
-				esc: Abort Command\n";
+void parseFilter(uint8_t isExt, uint8_t isMasked){
+	static uint32_t id;
+	static uint32_t mask;
+	 int isRemote;
+
+	static uint8_t tempByte;
+	/*Get RTR*/
+	waitTilAvail(1);
+	tempByte = fromHex(Serial2_read());
+	if(tempByte > 0x03){
+		logError(ERR_invalidRtrBits, ERR_Abort);
+		return;
+	}else if(tempByte > 0x01){ //mask = must match
+		if(tempByte & 0x01){
+			isRemote = 1;
+		}else{
+			isRemote = 0;
+		}
+	}else{ //mask = don't care
+		isRemote = -1;
+	}
+	/*Get ID*/
+	id = 0;
+	if(isExt){
+		waitTilAvail(8);
+		for(int i=0; i<8; i++){
+			tempByte = fromHex(Serial2_read());
+			if(tempByte > 0x0f){
+				logError(ERR_invalidHexChar, ERR_Abort);
+				return;
+			}
+			id |= tempByte << ((7-i)*4);
+		}
+		if(id > 0x1fffffff){
+			logError(ERR_idIsOutOfRange, ERR_Abort);
+			return;
+		}
+	}else{
+		waitTilAvail(3);
+		for(int i=0; i<3; i++){
+			tempByte = fromHex(Serial2_read());
+			if(tempByte > 0x0f){
+				logError(ERR_invalidHexChar, ERR_Abort);
+				return;
+			}
+			id |= tempByte << ((2-i)*4);
+		}
+		if(id > 0x7ff){
+			logError(ERR_idIsOutOfRange, ERR_Abort);
+			return;
+		}
+	}
+	/*Get mask and/or send*/
+	if(isMasked){
+		if(isExt){
+			waitTilAvail(8);
+			for(int i=0; i<8; i++){
+				tempByte = fromHex(Serial2_read());
+				if(tempByte > 0x0f){
+					logError(ERR_invalidHexChar, ERR_Abort);
+					return;
+				}
+				mask |= tempByte << ((7-i)*4);
+			}
+			if(mask > 0x1fffffff){
+				logError(ERR_idIsOutOfRange, ERR_Abort);
+				return;
+			}
+			bxCan_addMaskedFilterExt(id, mask, isRemote);
+		}else{
+			waitTilAvail(3);
+			for(int i=0; i<3; i++){
+				tempByte = fromHex(Serial2_read());
+				if(tempByte > 0x0f){
+					logError(ERR_invalidHexChar, ERR_Abort);
+					return;
+				}
+				mask |= tempByte << ((2-i)*4);
+			}
+			if(mask > 0x7ff){
+				logError(ERR_idIsOutOfRange, ERR_Abort);
+				return;
+			}
+			bxCan_addMaskedFilterStd(id, mask, isRemote);
+		}
+	}else{
+		if(isExt){
+			bxCan_addFilterExt(id, isRemote);
+		}else{
+			bxCan_addFilterStd(id, isRemote);
+		}
+	}
+
+}
+
+void parseFrame(uint8_t isExt, uint8_t isRemote){
+	static Can_frame_t newFrame;
+	static uint8_t tempByte;
+
+	newFrame.isExt = isExt;
+	newFrame.isRemote = isRemote;
+
+	/*Get DLC*/
+	waitTilAvail(1);
+	newFrame.dlc = fromHex(Serial2_read());
+	if(newFrame.dlc > 0x0f){
+		logError(ERR_invalidHexChar, ERR_Abort);
+		return;
+	}
+
+	/*Get ID*/
+	newFrame.id = 0;
+	if(isExt){
+		waitTilAvail(8);
+		for(int i=0; i<8; i++){
+			tempByte = fromHex(Serial2_read());
+			if(tempByte > 0x0f){
+				logError(ERR_invalidHexChar, ERR_Abort);
+				return;
+			}
+			newFrame.id |= tempByte << ((7-i)*4);
+		}
+		if(newFrame.id > 0x1fffffff){
+			logError(ERR_idIsOutOfRange, ERR_Abort);
+			return;
+		}
+	}else{
+		waitTilAvail(3);
+		for(int i=0; i<3; i++){
+			tempByte = fromHex(Serial2_read());
+			if(tempByte > 0x0f){
+				logError(ERR_invalidHexChar, ERR_Abort);
+				return;
+			}
+			newFrame.id |= tempByte << ((2-i)*4);
+		}
+		if(newFrame.id > 0x7ff){
+			logError(ERR_idIsOutOfRange, ERR_Abort);
+			return;
+		}
+	}
+
+	/*Get data*/
+	if(!isRemote){
+		waitTilAvail(newFrame.dlc*2);
+		for(int i=0; i<newFrame.dlc; i++){
+			tempByte = fromHex(Serial2_read());
+			if(tempByte > 0x0f){
+				logError(ERR_invalidHexChar, ERR_Abort);
+				return;
+			}
+			newFrame.Data[i] = tempByte << 4;
+			tempByte = fromHex(Serial2_read());
+			if(tempByte > 0x0f){
+				logError(ERR_invalidHexChar, ERR_Abort);
+				return;
+			}
+			newFrame.Data[i] |= tempByte;
+		}
+	}
+	bxCan_sendFrame(&newFrame);
+}
+
+void displayHelp(){
+	static uint8_t helpmsg[] = "{\"type\":\"help\",\"msg\":\"\n\nCandy Bugger\n\nSend Frame: '$', [DLC], [ID]x3|8, [Dat]x0~16\n$ designations:\n\t'-' == Std Data Frame\n\t'=' == Ext Data frame\n\t'_' == Std Remote Frame\n\t'+' == Ext Remote Frame\n\nSet Filter: '$', 0b00[RTRm][RTR], [ID]x3|8, [IDm]x3|8\n$ designations:\n\t',' == Std Unmasked Filter\n\t'.' == Ext Unmasked Filter\n\t'<' == Std Masked Filter\n\t'>' == Ext Masked Filter\n\nHelp (for no-ui operation): 'H'|'h'\n\"}\n";
+	xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+	Serial2_writeBuf(helpmsg);
+	xSemaphoreGive(UartTxMtxHandle);
+}
+
+void listFilters(){
+	static uint8_t truemsg[] = "true";
+	static uint8_t falsemsg[] = "flase";
+	static uint8_t idmsg[] = "xxxxxxxx";
+	static uint8_t filternummsg[] = "xx";
+
+	static uint8_t filtermsg1[] = "\"type\":\"filterList\",\"filters\":[";
+	static uint8_t filtermsg2[]	= "{\"filterNum\":";
+	static uint8_t filtermsg3[]	= ",\"isExtended\":";
+	static uint8_t filtermsg4[]	= ",\"isMasked\":";
+	static uint8_t filtermsg5[]	= ",\"isRemote\":";
+	static uint8_t filtermsg6[]	= ",\"maskRemote\":";
+	static uint8_t filtermsg7[]	= ",\"id\":\"";
+	static uint8_t filtermsg8[]	= "\",\"mask\":\"";
+	static uint8_t filtermsg9[]	= "\"}";
+	static uint8_t filtermsg10[] = "]}\n";
+
+	static uint8_t isFirstMsg;
+	static uint8_t len;
+
+	xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+	Serial2_writeBuf(filtermsg1);
+
+	isFirstMsg = 1;
+	for(int i=0; i<4*CAN_BANKS; i++){
+		static Can_filter_t newFilter;
+		if(bxCan_getFilter(&newFilter, i)==0){ /*FIXME get filter is glitched*/
+			if(isFirstMsg){
+				isFirstMsg = 0;
+			}else{
+				Serial2_write(',');
+			}
+			Serial2_writeBuf(filtermsg2);
+			len = intToDec(newFilter.filterNum, filternummsg);
+			Serial2_writeBytes(filternummsg, len);
+			Serial2_writeBuf(filtermsg3);
+			newFilter.isExt ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+			Serial2_writeBuf(filtermsg4);
+			newFilter.isMasked ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+			Serial2_writeBuf(filtermsg5);
+			newFilter.isRemote ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+			Serial2_writeBuf(filtermsg6);
+			newFilter.maskRemote ? Serial2_writeBuf(truemsg) : Serial2_writeBuf(falsemsg);
+			Serial2_writeBuf(filtermsg7);
+			intToHex(newFilter.id, idmsg, (newFilter.isExt?8:3));
+			Serial2_writeBytes(idmsg, (newFilter.isExt?8:3));
+			if(newFilter.isMasked){
+				Serial2_writeBuf(filtermsg8);
+				intToHex(newFilter.mask, idmsg, (newFilter.isExt?8:3));
+				Serial2_writeBytes(idmsg, (newFilter.isExt?8:3));
+			}
+			Serial2_writeBuf(filtermsg9);
+		}
+	}
+	Serial2_writeBuf(filtermsg10);
+	xSemaphoreGive(UartTxMtxHandle);
+	isFirstMsg = 1;
+}
 
 /* USER CODE END PFP */
 
@@ -249,11 +450,17 @@ int main(void)
 
   /* USER CODE BEGIN 2 */
   Serial2_begin();
-  static uint8_t startmsg[] = "boot diag\n";
-  Serial2_writeBytes(startmsg, sizeof(startmsg)-1);
+
+  /*TODO better boot msg*/
+  static uint8_t bootmsg1[] = "{\"type\":\"boot\",\"module\":\"Debugger\",\"version\":\"";
+  static uint8_t bootmsg2[] = "\",\"reason\":\"\"}\n";
+  Serial2_writeBuf(bootmsg1);
+  Serial2_writeBuf(FWVersionNumber);
+  Serial2_writeBuf(bootmsg2);
 
   bxCan_begin(&hcan1, &mainCanRxQHandle, &mainCanTxQHandle);
-  bxCan_setTxCallback(cantxcb); /*TODO fix cb */
+  bxCan_setTxCallback(cantxcb);
+  bxCan_setErrCallback(canercb);
   bxCan_addMaskedFilterStd(0,0,0); //catch all
   bxCan_addMaskedFilterExt(0,0,0);
   /* USER CODE END 2 */
@@ -290,6 +497,10 @@ int main(void)
   osThreadDef(ProcessUart, doProcessUart, osPriorityNormal, 0, 512);
   ProcessUartHandle = osThreadCreate(osThread(ProcessUart), NULL);
 
+  /* definition and creation of housekeeping */
+  osThreadDef(housekeeping, doHousekeeping, osPriorityBelowNormal, 0, 512);
+  housekeepingHandle = osThreadCreate(osThread(housekeeping), NULL);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -316,57 +527,7 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1){
-//	  if(Serial2_available()){
-//		  doCommand();
-//		  static uint8_t delims1[] = {',',';'};
-//		  static uint8_t delims2[] = {0x0d,0x0a};
-//		  if(inputMode){//entering data
-//			  if(Serial2_findAny(delims2, sizeof(delims2))==0){
-//				  while(Serial2_findAny(delims2, sizeof(delims2))==0) Serial2_read();
-//				  sendFrameFromInput();
-//				  inputId = 0;
-//				  inputMode = 0;
-//				  for(int i=0; i<8; i++){dataBuf[i]=0;}
-//				  inputLength = 0;
-//			  }else{
-//				  toCaps(Serial2_buffer, 1);
-//				  uint8_t hex = fromHex(Serial2_read());
-//					  if(hex <= 0x0f){
-//					  dataBuf[inputLength/2] = dataBuf[inputLength/2]<<4;
-//					  dataBuf[inputLength/2] += hex;
-//					  inputLength++;
-//					  if(inputLength > 16){
-//						  static uint8_t idovfmsg[] = "\nDATA TOO LONG! RETRY.\n";
-//						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-//						  inputLength = 0;
-//						  inputId = 0;
-//						  inputMode = 0;
-//						  for(int i=0; i<8; i++){dataBuf[i]=0;}
-//					  }
-//				  }
-//			  }
-//		  }else{//entering id
-//			  if(Serial2_findAny(delims1, sizeof(delims1))==0){
-//				  while(Serial2_findAny(delims1, sizeof(delims1))==0) Serial2_read();
-//				  inputMode = 1;
-//				  inputLength = 0;
-//			  }else{
-//				  toCaps(Serial2_buffer, 1);
-//				  uint8_t hex = fromHex(Serial2_read());
-//				  if(hex <= 0x0f){
-//					  inputId = inputId<<4;
-//					  inputId += hex;
-//					  inputLength++;
-//					  if(inputLength > 8){
-//						  static uint8_t idovfmsg[] = "\nID TOO LONG! RETRY.\n";
-//						  Serial2_writeBytes(idovfmsg, sizeof(idovfmsg)-1);
-//						  inputLength = 0;
-//						  inputId = 0;
-//					  }
-//				  }
-//			  }
-//		  }
-//	  }
+
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
@@ -639,218 +800,10 @@ void doProcessCan(void const * argument)
   /* USER CODE END 5 */ 
 }
 
-void logError(LogErrorCode_t e, LogErrorLevel_t l){
-	static uint8_t errlvlwarn[] = "warn";			//error fixed or accounted for
-	static uint8_t errlvlabort[] = "abort";			//error caused function to exit
-	static uint8_t errlvlfatal[] = "fatal";			//shit (and soon the watchdog) hit the fan.
-	static uint8_t errlvldunno[] = "unknown";		//wrong value or lazy implementation
-	static uint8_t errCode[] = "xxxxxxxxxx";	//max is 4 billion for int
-	static uint8_t errmsg1[] = "{\"type\":\"error\",\"code\":";
-	static uint8_t errmsg2[] = ",\"message\":\"";
-	static uint8_t errmsg3[] = "\",\"level\":\"";
-	static uint8_t errmsg4[] = "\"}\n";
-
-	xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
-	uint8_t length = intToDec(e, errCode);
-	Serial2_writeBuf(errmsg1);
-	Serial2_writeBytes(errCode, length);
-	Serial2_writeBuf(errmsg2);
-	Serial2_writeBytes(Err_Messages[e].str, Err_Messages[e].length);
-	Serial2_writeBuf(errmsg3);
-	switch(l){
-	case ERR_Fatal:
-		Serial2_writeBuf(errlvlfatal); break;
-	case ERR_Warn:
-		Serial2_writeBuf(errlvlwarn); break;
-	case ERR_Abort:
-		Serial2_writeBuf(errlvlabort); break;
-	default:
-		Serial2_writeBuf(errlvldunno); break;
-	}
-	Serial2_writeBuf(errmsg4);
-	xSemaphoreGive(UartTxMtxHandle);
-}
-
-static void waitTilAvail(uint length){ //blocks current taks (runs others) until true
-	while(Serial2_available() < length){
-		osDelay(1);
-	}
-}
-
-void parseFilter(uint8_t isExt, uint8_t isMasked){
-	static uint32_t id;
-	static uint32_t mask;
-	 int isRemote;
-
-	static uint8_t tempByte;
-	/*Get RTR*/
-	waitTilAvail(1);
-	tempByte = fromHex(Serial2_read());
-	if(tempByte > 0x03){
-		logError(ERR_invalidRtrBits, ERR_Abort);
-		return;
-	}else if(tempByte > 0x01){ //mask = must match
-		if(tempByte & 0x01){
-			isRemote = 1;
-		}else{
-			isRemote = 0;
-		}
-	}else{ //mask = don't care
-		isRemote = -1;
-	}
-	/*Get ID*/
-	id = 0;
-	if(isExt){
-		waitTilAvail(8);
-		for(int i=0; i<8; i++){
-			tempByte = fromHex(Serial2_read());
-			if(tempByte > 0x0f){
-				logError(ERR_invalidHexChar, ERR_Abort);
-				return;
-			}
-			id |= tempByte << ((7-i)*4);
-		}
-		if(id > 0x1fffffff){
-			logError(ERR_idIsOutOfRange, ERR_Abort);
-			return;
-		}
-	}else{
-		waitTilAvail(3);
-		for(int i=0; i<3; i++){
-			tempByte = fromHex(Serial2_read());
-			if(tempByte > 0x0f){
-				logError(ERR_invalidHexChar, ERR_Abort);
-				return;
-			}
-			id |= tempByte << ((2-i)*4);
-		}
-		if(id > 0x7ff){
-			logError(ERR_idIsOutOfRange, ERR_Abort);
-			return;
-		}
-	}
-	/*Get mask and/or send*/
-	if(isMasked){
-		if(isExt){
-			waitTilAvail(8);
-			for(int i=0; i<8; i++){
-				tempByte = fromHex(Serial2_read());
-				if(tempByte > 0x0f){
-					logError(ERR_invalidHexChar, ERR_Abort);
-					return;
-				}
-				mask |= tempByte << ((7-i)*4);
-			}
-			if(mask > 0x1fffffff){
-				logError(ERR_idIsOutOfRange, ERR_Abort);
-				return;
-			}
-			bxCan_addMaskedFilterExt(id, mask, isRemote);
-		}else{
-			waitTilAvail(3);
-			for(int i=0; i<3; i++){
-				tempByte = fromHex(Serial2_read());
-				if(tempByte > 0x0f){
-					logError(ERR_invalidHexChar, ERR_Abort);
-					return;
-				}
-				mask |= tempByte << ((2-i)*4);
-			}
-			if(mask > 0x7ff){
-				logError(ERR_idIsOutOfRange, ERR_Abort);
-				return;
-			}
-			bxCan_addMaskedFilterStd(id, mask, isRemote);
-		}
-	}else{
-		if(isExt){
-			bxCan_addFilterExt(id, isRemote);
-		}else{
-			bxCan_addFilterStd(id, isRemote);
-		}
-	}
-
-}
-
-void parseFrame(uint8_t isExt, uint8_t isRemote){
-	static Can_frame_t newFrame;
-	static uint8_t tempByte;
-
-	newFrame.isExt = isExt;
-	newFrame.isRemote = isRemote;
-
-	/*Get DLC*/
-	waitTilAvail(1);
-	newFrame.dlc = fromHex(Serial2_read());
-	if(newFrame.dlc > 0x0f){
-		logError(ERR_invalidHexChar, ERR_Abort);
-		return;
-	}
-
-	/*Get ID*/
-	newFrame.id = 0;
-	if(isExt){
-		waitTilAvail(8);
-		for(int i=0; i<8; i++){
-			tempByte = fromHex(Serial2_read());
-			if(tempByte > 0x0f){
-				logError(ERR_invalidHexChar, ERR_Abort);
-				return;
-			}
-			newFrame.id |= tempByte << ((7-i)*4);
-		}
-		if(newFrame.id > 0x1fffffff){
-			logError(ERR_idIsOutOfRange, ERR_Abort);
-			return;
-		}
-	}else{
-		waitTilAvail(3);
-		for(int i=0; i<3; i++){
-			tempByte = fromHex(Serial2_read());
-			if(tempByte > 0x0f){
-				logError(ERR_invalidHexChar, ERR_Abort);
-				return;
-			}
-			newFrame.id |= tempByte << ((2-i)*4);
-		}
-		if(newFrame.id > 0x7ff){
-			logError(ERR_idIsOutOfRange, ERR_Abort);
-			return;
-		}
-	}
-
-	/*Get data*/
-	if(!isRemote){
-		waitTilAvail(newFrame.dlc*2);
-		for(int i=0; i<newFrame.dlc; i++){
-			tempByte = fromHex(Serial2_read());
-			if(tempByte > 0x0f){
-				logError(ERR_invalidHexChar, ERR_Abort);
-				return;
-			}
-			newFrame.Data[i] = tempByte << 4;
-			tempByte = fromHex(Serial2_read());
-			if(tempByte > 0x0f){
-				logError(ERR_invalidHexChar, ERR_Abort);
-				return;
-			}
-			newFrame.Data[i] |= tempByte;
-		}
-	}
-	bxCan_sendFrame(&newFrame);
-}
-
-void displayHelp(){
-	static uint8_t helpmsg[] = "\nCandy Bugger\n\nSend Frame: '$', [DLC], [ID]x3|8, [Dat]x0~16\n$ designations:\n\t'-' == Std Data Frame\n\t'=' == Ext Data frame\n\t'_' == Std Remote Frame\n\t'+' == Ext Remote Frame\n\nSet Filter: '$', 0b00[RTRm][RTR], [ID]x3|8, [IDm]x3|8\n$ designations:\n\t',' == Std Unmasked Filter\n\t'.' == Ext Unmasked Filter\n\t'<' == Std Masked Filter\n\t'>' == Ext Masked Filter\n\nHelp (for no-ui operation): 'H'|'h'\n\n";
-	xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
-	Serial2_writeBuf(helpmsg);
-	xSemaphoreGive(UartTxMtxHandle);
-}
-
 /* doProcessUart function */
 void doProcessUart(void const * argument)
 {
-	/* USER CODE BEGIN doProcessUart */
+  /* USER CODE BEGIN doProcessUart */
 	/* Infinite loop */
 	for(;;)
 	{
@@ -882,6 +835,12 @@ void doProcessUart(void const * argument)
 			case '>':
 				parseFilter(1,1);
 				break;
+			case '/':
+				//deleteFilter();
+				break;
+			case '?':
+				listFilters();
+				break;
 			case 'H':
 			case 'h':
 				displayHelp();
@@ -893,7 +852,48 @@ void doProcessUart(void const * argument)
 			osDelay(1);
 		}
 	}
-	/* USER CODE END doProcessUart */
+  /* USER CODE END doProcessUart */
+}
+
+/* doHousekeeping function */
+void doHousekeeping(void const * argument)
+{
+	/* USER CODE BEGIN doHousekeeping */
+
+	/*JSON goodness*/
+	static uint8_t sentmsg1[] = "{\"type\":\"sent\",\"count\":";
+	static uint8_t sentmsg2[] = "}\n";
+	static uint8_t sentcount[] = "xxxxx";
+
+	/* Infinite loop */
+	for(;;){
+		/*First, check for errors*/
+		if(CanErr){
+			for(int i=0; i<9; i++){
+				if(CanErr & (1 << i)){
+					logError(ERR_CanErrorEWG + i, ERR_Warn);
+				}
+			}
+			CanErr = 0;
+		/*Then, check for frames sent*/
+		}else if(CanSent){
+			static uint16_t sent; //interrupt proofing
+			static uint8_t len;
+			sent = CanSent;
+			len = intToDec(sent, sentcount);
+
+			xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+			Serial2_writeBuf(sentmsg1);
+			Serial2_writeBytes(sentcount, len);
+			Serial2_writeBuf(sentmsg2);
+			xSemaphoreGive(UartTxMtxHandle);
+
+			CanSent -= sent;
+		}else{
+			osDelay(1);
+		}
+	}
+  /* USER CODE END doHousekeeping */
 }
 
 /* TmrKickDog function */

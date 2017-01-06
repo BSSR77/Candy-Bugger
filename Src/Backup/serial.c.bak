@@ -145,6 +145,7 @@ static uint8_t *Serial2_head_tx = Serial2_Buffer_tx;
 static uint8_t *Serial2_max_tx = Serial2_Buffer_tx + SERIAL2_BUFFER_SIZE_TX;
 static uint8_t Serial2_ovf_tx = 0;
 static uint16_t currentWrite = 0; //length of ongoing dma transaction
+static uint8_t txWillTrigger = 0;
 
 static int Serial2_available_tx(){
 	if(Serial2_ovf_tx==0){
@@ -166,7 +167,7 @@ static void Serial2_dequeue_tx(int length){
 	}
 }
 
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
+static void doTx(uint8_t fromISR){
 	static int txavail;
 	txavail = Serial2_available_tx();
 	if(txavail){
@@ -175,13 +176,19 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
 		}else{
 			currentWrite = txavail;
 		}
-		HAL_UART_Transmit_DMA(huart, Serial2_tail_tx, currentWrite);
+		HAL_UART_Transmit_DMA(&huart2, Serial2_tail_tx, currentWrite);
 		Serial2_dequeue_tx(currentWrite);
+		txWillTrigger = 0;
 	}
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart){
+	if(txWillTrigger == 0) doTx(1);
 }
 
 //IF YOU ARE USING RTOS, PLEASE USE MUTEXES, OR WRAP THE BELOW IN CRITICAL SECTIONS.
 void Serial2_writeBytes(uint8_t *data, uint16_t length){
+	txWillTrigger = 1;
 	if(Serial2_head_tx + length >= Serial2_max_tx){
 		uint16_t half = Serial2_max_tx-Serial2_head_tx;
 		memcpy(Serial2_head_tx, data, half);
@@ -193,7 +200,9 @@ void Serial2_writeBytes(uint8_t *data, uint16_t length){
 		Serial2_head_tx += length;
 	}
 	if(Serial2_availableForWrite()){
-		HAL_UART_TxCpltCallback(&huart2);
+		doTx(0);
+	}else{
+		txWillTrigger = 0;
 	}
 }
 
