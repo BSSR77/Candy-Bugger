@@ -247,7 +247,7 @@ int bxCan_addFilterExt(uint32_t id, uint8_t isRemote){ //2 slots per bank
 
 int bxCan_getFilter(Can_filter_t *target, int filterNum){
 	CAN_FilterConfTypeDef *bank = &Can_filters[filterNum/4];
-	if(bank->FilterActivation == ENABLE){ //optimizing this by hand is just not worth it
+	if(bank->FilterActivation == ENABLE && (Can_filterUsage[filterNum/4] & (1<<(3-(filterNum%4))))){ //optimizing this by hand is just not worth it
 		target->filterNum = filterNum;
 		filterNum %= 4;
 		if(bank->FilterScale == 0x00){ //16 bit

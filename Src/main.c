@@ -71,7 +71,7 @@ osMutexId UartTxMtxHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-static uint8_t FWVersionNumber[] = "0.9.0";
+static uint8_t FWVersionNumber[] = "1.0.0";
 
 static uint32_t CanErr = 0;
 static uint16_t CanSent = 0;
@@ -94,6 +94,20 @@ void TmrKickDog(void const * argument);
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
 void logError(LogErrorCode_t e, LogErrorLevel_t l);
+
+void notifySuccess(){
+	static uint8_t msg[] = "{\"type\":\"action\",\"success\":true}\n";
+	xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+	Serial2_writeBuf(msg);
+	xSemaphoreGive(UartTxMtxHandle);
+}
+
+void notifyFail(){
+	static uint8_t msg[] = "{\"type\":\"action\",\"success\":false}\n";
+	xSemaphoreTake(UartTxMtxHandle, portMAX_DELAY);
+	Serial2_writeBuf(msg);
+	xSemaphoreGive(UartTxMtxHandle);
+}
 
 void toCaps(uint8_t *str, uint8_t length){
 	for(int i=0; i<length; i++){
@@ -282,8 +296,8 @@ void parseFilter(uint8_t isExt, uint8_t isMasked){
 		}else{
 			bxCan_addFilterStd(id, isRemote);
 		}
+		notifySuccess();
 	}
-
 }
 
 void parseFrame(uint8_t isExt, uint8_t isRemote){
@@ -367,7 +381,7 @@ void listFilters(){
 	static uint8_t idmsg[] = "xxxxxxxx";
 	static uint8_t filternummsg[] = "xx";
 
-	static uint8_t filtermsg1[] = "\"type\":\"filterList\",\"filters\":[";
+	static uint8_t filtermsg1[] = "{\"type\":\"filterList\",\"filters\":[";
 	static uint8_t filtermsg2[]	= "{\"filterNum\":";
 	static uint8_t filtermsg3[]	= ",\"isExtended\":";
 	static uint8_t filtermsg4[]	= ",\"isMasked\":";
@@ -418,6 +432,34 @@ void listFilters(){
 	Serial2_writeBuf(filtermsg10);
 	xSemaphoreGive(UartTxMtxHandle);
 	isFirstMsg = 1;
+}
+
+void deleteFilter(){
+	static uint8_t filterNum;
+	static uint8_t tempChar;
+	static int success;
+	waitTilAvail(1);
+	tempChar = Serial2_read();
+	tempChar = fromHex(tempChar);
+	if(tempChar > 9){
+		logError(ERR_invalidDecChar, ERR_Abort);
+		return;
+	}
+	filterNum = 10*tempChar;
+	waitTilAvail(1);
+	tempChar = Serial2_read();
+	tempChar = fromHex(tempChar);
+	if(tempChar > 9){
+		logError(ERR_invalidDecChar, ERR_Abort);
+		return;
+	}
+	filterNum += tempChar;
+	if(filterNum >= CAN_BANKS*4){
+		logError(ERR_invalidFilterNum, ERR_Abort);
+		return;
+	}
+	success = bxCan_removeFilter(filterNum);
+	(success==-1) ? notifyFail() : notifySuccess();
 }
 
 /* USER CODE END PFP */
@@ -836,7 +878,7 @@ void doProcessUart(void const * argument)
 				parseFilter(1,1);
 				break;
 			case '/':
-				//deleteFilter();
+				deleteFilter();
 				break;
 			case '?':
 				listFilters();
