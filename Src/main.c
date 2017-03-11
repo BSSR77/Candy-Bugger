@@ -46,9 +46,12 @@
 #include "cmsis_os.h"
 
 /* USER CODE BEGIN Includes */
+
 #include "serial.h"
 #include "can.h"
 #include "errors.h"
+
+
 
 /* USER CODE END Includes */
 
@@ -651,6 +654,11 @@ static void MX_CAN1_Init(void)
 {
 
   hcan1.Instance = CAN1;
+//  hcan1.Init.Prescaler = 20; //was 10
+//  hcan1.Init.Mode = CAN_MODE_NORMAL;
+//  hcan1.Init.SJW = CAN_SJW_1TQ; //was 3
+//  hcan1.Init.BS1 = CAN_BS1_8TQ; //was 12
+//  hcan1.Init.BS2 = CAN_BS2_7TQ; //was 3
   hcan1.Init.Prescaler = 10;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SJW = CAN_SJW_3TQ;

@@ -67,7 +67,7 @@
 #define VCP_RX_GPIO_Port GPIOA
 /* USER CODE BEGIN Private defines */
 #define SERIAL2_BUFFER_SIZE 1024	//4.44 seconds continuous write
-#define SERIAL2_BUFFER_SIZE_TX 1024	//about 8.5 long CAN frames
+#define SERIAL2_BUFFER_SIZE_TX 4096	//about 8.5 long CAN frames
 /* USER CODE END Private defines */
 
 /**
