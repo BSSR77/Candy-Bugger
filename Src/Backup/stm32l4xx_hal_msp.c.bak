@@ -200,7 +200,10 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     hdma_usart2_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
     hdma_usart2_rx.Init.Mode = DMA_CIRCULAR;
     hdma_usart2_rx.Init.Priority = DMA_PRIORITY_HIGH;
-    HAL_DMA_Init(&hdma_usart2_rx);
+    if (HAL_DMA_Init(&hdma_usart2_rx) != HAL_OK)
+    {
+      Error_Handler();
+    }
 
     __HAL_LINKDMA(huart,hdmarx,hdma_usart2_rx);
 
@@ -213,7 +216,10 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     hdma_usart2_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
     hdma_usart2_tx.Init.Mode = DMA_NORMAL;
     hdma_usart2_tx.Init.Priority = DMA_PRIORITY_VERY_HIGH;
-    HAL_DMA_Init(&hdma_usart2_tx);
+    if (HAL_DMA_Init(&hdma_usart2_tx) != HAL_OK)
+    {
+      Error_Handler();
+    }
 
     __HAL_LINKDMA(huart,hdmatx,hdma_usart2_tx);
 

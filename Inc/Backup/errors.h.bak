@@ -40,6 +40,8 @@ uint8_t ERR_CanErrorACKMsg[] = "CAN ACK error!";
 uint8_t ERR_CanErrorBRMsg[] = "What's a CAN BR error?";
 uint8_t ERR_CanErrorBDMsg[] = "What's a CAN BD error?";
 uint8_t ERR_CanErrorCRCMsg[] = "CAN CRC error!";
+uint8_t ERR_invalidDecCharMsg[] = "Invalid decimal character received!";
+uint8_t ERR_invalidFilterNumMsg[] = "Filter Number out of range!";
 
 typedef enum{
 	ERR_invalidHexChar,
@@ -54,7 +56,9 @@ typedef enum{
 	ERR_CanErrorACK,
 	ERR_CanErrorBR,
 	ERR_CanErrorBD,
-	ERR_CanErrorCRC
+	ERR_CanErrorCRC,
+	ERR_invalidDecChar,
+	ERR_invalidFilterNum,
 }LogErrorCode_t;
 
 typedef enum{
@@ -77,7 +81,9 @@ ERR_Msg_t Err_Messages[] = { //MUST follow order of LogErrorCode_t
 		{ERR_CanErrorACKMsg, sizeof(ERR_CanErrorACKMsg)-1},
 		{ERR_CanErrorBRMsg, sizeof(ERR_CanErrorBRMsg)-1},
 		{ERR_CanErrorBDMsg, sizeof(ERR_CanErrorBDMsg)-1},
-		{ERR_CanErrorCRCMsg, sizeof(ERR_CanErrorCRCMsg)-1}
+		{ERR_CanErrorCRCMsg, sizeof(ERR_CanErrorCRCMsg)-1},
+		{ERR_invalidDecCharMsg, sizeof(ERR_invalidDecCharMsg)-1},
+		{ERR_invalidFilterNumMsg, sizeof(ERR_invalidFilterNumMsg)-1}
 };
 
 #endif /* ERRORS_H_ */

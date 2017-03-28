@@ -654,16 +654,11 @@ static void MX_CAN1_Init(void)
 {
 
   hcan1.Instance = CAN1;
-//  hcan1.Init.Prescaler = 20; //was 10
-//  hcan1.Init.Mode = CAN_MODE_NORMAL;
-//  hcan1.Init.SJW = CAN_SJW_1TQ; //was 3
-//  hcan1.Init.BS1 = CAN_BS1_8TQ; //was 12
-//  hcan1.Init.BS2 = CAN_BS2_7TQ; //was 3
   hcan1.Init.Prescaler = 10;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
-  hcan1.Init.SJW = CAN_SJW_3TQ;
-  hcan1.Init.BS1 = CAN_BS1_12TQ;
-  hcan1.Init.BS2 = CAN_BS2_3TQ;
+  hcan1.Init.SJW = CAN_SJW_1TQ;
+  hcan1.Init.BS1 = CAN_BS1_13TQ;
+  hcan1.Init.BS2 = CAN_BS2_2TQ;
   hcan1.Init.TTCM = DISABLE;
   hcan1.Init.ABOM = ENABLE;
   hcan1.Init.AWUM = ENABLE;
@@ -908,7 +903,7 @@ void doProcessUart(void const * argument)
 /* doHousekeeping function */
 void doHousekeeping(void const * argument)
 {
-	/* USER CODE BEGIN doHousekeeping */
+  /* USER CODE BEGIN doHousekeeping */
 
 	/*JSON goodness*/
 	static uint8_t sentmsg1[] = "{\"type\":\"sent\",\"count\":";
